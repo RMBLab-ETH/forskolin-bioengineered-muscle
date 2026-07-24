@@ -1,0 +1,332 @@
+---
+title: "Analysis"
+author: "Arion Förtsch @ Functional Genomics Center Zurich"
+output:
+  html_document:
+    highlight: pygments
+    theme: paper
+    code_folding: hide
+    toc: no
+    toc_depth: 4
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning=FALSE)
+
+suppressPackageStartupMessages({
+  library(SummarizedExperiment)
+  library(ggplot2)
+  library(dplyr)
+  library(DT)
+  library(tidyr)
+  library(tibble)
+  library(ggrepel)
+  }
+)
+
+```
+
+```{r make html full_width, echo=FALSE, results='asis'}
+cat("
+<style>
+
+/* Main R Markdown container */
+.main-container {
+  max-width: 100% !important;
+  width: 100% !important;
+}
+
+/* Remove bootstrap width limits */
+.container, .container-fluid {
+  max-width: 100% !important;
+}
+
+/* Optional: reduce margins so you really use the width */
+body {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+/* Optional padding so text isn't glued to edges */
+.main-container {
+  padding-left: 24px;
+  padding-right: 24px;
+}
+
+</style>
+")
+```
+
+
+# Analysis {.tabset}
+
+## Overview
+Violin plots of the log2 fold-change of selected fiber-type marker gene sets for the two differential-expression comparisons.
+
+The edgeR differential-expression results are available via the web application (see README):
+
+1) HDM_F2 vs HDM
+2) HDM_F2_STI vs HDM
+
+## Downloading data 
+
+```{r, downloading data, echo = T}
+
+
+# edgeR deResult objects — see README (Data availability) for access. Place them in ./data/
+HDM_F2     <- readRDS(file.path("data", "HDM_F2--over--HDM_deResult.rds"))
+HDM_F2_sti <- readRDS(file.path("data", "HDM_F2_STI--over--HDM_deResult.rds"))
+
+```
+
+
+```{r, defining gene groups, echo=TRUE}
+
+
+broad_fast_typeII <- c("SIX1", "ACTN3", "ALDOA", "AMPD1", "ATP2A1", "CASQ1", "CKM", "ENO3", "GAPDH", "GPI", "LDHA", "MYH1", "MYH2", "MYL1", "MYLPF", "PFKM", "PGAM2", "PGK1", "PGM1", "PYGM", "TNNC2", "TNNI2", "TNNT3", "TPI1","SLC2A4")
+broad_slow_typeI <- c("NFATC1", "ATP2A2", "CASQ2", "COX4I1", "CS", "FABP3", "IDH2", "LDHB", "MYH7", "MYL2", "MYL3", "PDHA1", "PLN", "PPARGC1A", "SDHA", "TNNC1", "TNNI1", "TNNT1")
+
+
+
+gene_groups <- list(
+  "Broad fast type II"   = broad_fast_typeII,
+  "Broad slow type I"    = broad_slow_typeI
+)
+
+gene_df <- enframe(gene_groups, name = "gene_group", value = "gene") %>%
+  unnest(gene) %>%
+  arrange(gene_group, gene)
+
+datatable(
+  gene_df,
+  rownames = FALSE,
+  filter = "top",
+  options = list(
+    pageLength = 10,
+    autoWidth = TRUE
+  )
+)
+```
+
+
+```{r extract log2FC and prepare data}
+
+HDM_F2_df <- as.data.frame(rowData(HDM_F2))
+HDM_F2_sti_df <- as.data.frame(rowData(HDM_F2_sti))
+
+# Function to extract log2FC for a gene list
+extract_log2fc <- function(df, gene_list, gene_group_name) {
+  df %>%
+    filter(gene_name %in% gene_list) %>%
+    dplyr::select(gene_name, log2Ratio, fdr) %>%
+    mutate(gene_group = gene_group_name)
+}
+
+# Extract log2FC for each gene group from HDM_F2
+hdm_f2_broad_fast <- extract_log2fc(HDM_F2_df, broad_fast_typeII, "Broad Fast Type II")
+hdm_f2_broad_slow <- extract_log2fc(HDM_F2_df, broad_slow_typeI, "Broad Slow Type I")
+
+# Combine and add comparison label
+hdm_f2_combined <- bind_rows(hdm_f2_broad_fast, hdm_f2_broad_slow) %>%
+  mutate(comparison = "HDM_F2 vs HDM")
+
+# Extract log2FC for each gene group from HDM_F2_STI
+hdm_f2_sti_broad_fast <- extract_log2fc(HDM_F2_sti_df, broad_fast_typeII, "Broad Fast Type II")
+hdm_f2_sti_broad_slow <- extract_log2fc(HDM_F2_sti_df, broad_slow_typeI, "Broad Slow Type I")
+
+# Combine and add comparison label
+hdm_f2_sti_combined <- bind_rows(hdm_f2_sti_broad_fast, hdm_f2_sti_broad_slow) %>%
+  mutate(comparison = "HDM_F2_STI vs HDM")
+
+# Combine all data and add significance column
+plot_data <- bind_rows(hdm_f2_combined, hdm_f2_sti_combined) %>%
+  mutate(significant = ifelse(log2Ratio > 0.5 & fdr < 0.05, "Significant", "Not Significant"))
+
+# Check which genes were found, and report any missing from each result (so silent drops are visible)
+report_missing <- function(df, gene_list, label, comparison) {
+  missing <- setdiff(gene_list, df$gene_name)
+  cat(comparison, "-", label, ":", length(gene_list) - length(missing), "/", length(gene_list), "found\n")
+  if (length(missing)) cat("   missing:", paste(missing, collapse = ", "), "\n")
+}
+report_missing(HDM_F2_df,     broad_fast_typeII, "Broad Fast Type II", "HDM_F2 vs HDM")
+report_missing(HDM_F2_df,     broad_slow_typeI,  "Broad Slow Type I",  "HDM_F2 vs HDM")
+report_missing(HDM_F2_sti_df, broad_fast_typeII, "Broad Fast Type II", "HDM_F2_STI vs HDM")
+report_missing(HDM_F2_sti_df, broad_slow_typeI,  "Broad Slow Type I",  "HDM_F2_STI vs HDM")
+
+```
+
+## Violin Plots
+
+
+```{r violin plot faceted with significance, fig.width=14, fig.height=6}
+
+# Alternative: Faceted violin plot
+ggplot(plot_data, aes(x = comparison, y = log2Ratio, fill = comparison)) +
+  geom_violin(alpha = 0.7) +
+  geom_boxplot(aes(group = interaction(gene_group, comparison)),width = 0.15, outlier.shape = NA, alpha = 0.5, fill = "white", color = "black") +
+  geom_jitter(aes(color = significant), width = 0.1, alpha = 0.7, size = 2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  facet_wrap(~gene_group, scales = "free_y", nrow = 1) +
+  labs(
+    title = "",
+    x = "",
+    y = "Log2 Fold Change",
+    fill = "Comparison",
+    color = "Significance: (log2FC > 0.5 & FDR < 0.05)"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    legend.position = "top",
+    strip.text = element_text(face = "bold", size = 10),
+    plot.title = element_text(face = "bold", size = 14)
+  ) +
+  scale_fill_manual(values = c("HDM_F2 vs HDM" = "#ffb000", "HDM_F2_STI vs HDM" = "#648fff")) +
+  scale_color_manual(values = c("Significant" = "red", "Not Significant" = "#B0B0B0"))
+
+
+
+```
+
+```{r}
+ggplot(plot_data, aes(x = comparison, y = log2Ratio, fill = comparison)) +
+  geom_violin(alpha = 0.7) +
+  geom_boxplot(aes(group = interaction(gene_group, comparison)), width = 0.15, outlier.shape = NA, alpha = 0.5, fill = "white", color = "black") +
+  geom_jitter(aes(color = significant), width = 0.1, alpha = 0.7, size = 2) +
+  geom_text_repel(
+    aes(label = gene_name, color = significant),
+    size = 2.5,
+    max.overlaps = 20,
+    box.padding = 0.3,
+    segment.size = 0.2,
+    show.legend = FALSE
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  facet_wrap(~gene_group, scales = "free_y", nrow = 1) +
+  labs(
+    title = "",
+    x = "",
+    y = "Log2 Fold Change",
+    fill = "Comparison",
+    color = "Significance: (log2FC > 0.5 & FDR < 0.05)"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    legend.position = "top",
+    strip.text = element_text(face = "bold", size = 10),
+    plot.title = element_text(face = "bold", size = 14)
+  ) +
+  scale_fill_manual(values = c("HDM_F2 vs HDM" = "#ffb000", "HDM_F2_STI vs HDM" = "#648fff")) +
+  scale_color_manual(values = c("Significant" = "red", "Not Significant" = "#B0B0B0"))
+```
+
+
+Scale matched
+```{r}
+ggplot(plot_data, aes(x = comparison, y = log2Ratio, fill = comparison)) +
+  geom_violin(alpha = 0.7) +
+  geom_boxplot(aes(group = interaction(gene_group, comparison)), width = 0.15, outlier.shape = NA, alpha = 0.5, fill = "white", color = "black") +
+  geom_jitter(aes(color = significant), width = 0.1, alpha = 0.7, size = 2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  
+  # CHANGE HERE: Changed "free_y" to "fixed"
+  facet_wrap(~gene_group, scales = "fixed", nrow = 1) + 
+  
+  labs(
+    title = "",
+    x = "",
+    y = "Log2 Fold Change",
+    fill = "Comparison",
+    color = "Significance: (log2FC > 0.5 & FDR < 0.05)"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    legend.position = "top",
+    strip.text = element_text(face = "bold", size = 10),
+    plot.title = element_text(face = "bold", size = 14)
+  ) +
+  scale_fill_manual(values = c("HDM_F2 vs HDM" = "#ffb000", "HDM_F2_STI vs HDM" = "#648fff")) +
+  scale_color_manual(values = c("Significant" = "red", "Not Significant" = "#B0B0B0"))
+```
+labeled:
+
+```{r}
+ggplot(plot_data, aes(x = comparison, y = log2Ratio, fill = comparison)) +
+  geom_violin(alpha = 0.7) +
+  geom_boxplot(aes(group = interaction(gene_group, comparison)), 
+               width = 0.15, outlier.shape = NA, alpha = 0.5, fill = "white", color = "black") +
+  geom_jitter(aes(color = significant), width = 0.1, alpha = 0.7, size = 2) +
+  
+  # --- FIXED LAYER ---
+  geom_text_repel(
+    data = subset(plot_data, significant == "Significant"),
+    aes(label = gene_name), # Updated from gene_symbol to gene_name
+    size = 3,
+    box.padding = 0.35, 
+    point.padding = 0.5,
+    segment.color = 'grey50',
+    max.overlaps = Inf 
+  ) +
+  # ------------------
+  
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  facet_wrap(~gene_group, scales = "fixed", nrow = 1) +  
+  labs(
+    title = "Gene Expression Changes by Muscle Fiber Type",
+    x = "",
+    y = "Log2 Fold Change",
+    fill = "Comparison",
+    color = "Significance: (log2FC > 0.5 & FDR < 0.05)"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    legend.position = "top",
+    strip.text = element_text(face = "bold", size = 10)
+  ) +
+  scale_fill_manual(values = c("HDM_F2 vs HDM" = "#ffb000", "HDM_F2_STI vs HDM" = "#648fff")) +
+  scale_color_manual(values = c("Significant" = "red", "Not Significant" = "#B0B0B0"))
+```
+
+
+```{r violin plot faceted, fig.width=14, fig.height=6}
+
+# Alternative: Faceted violin plot
+ggplot(plot_data, aes(x = comparison, y = log2Ratio, fill = comparison)) +
+  geom_violin(alpha = 0.7) +
+  geom_boxplot(aes(group = interaction(gene_group, comparison)),width = 0.15, outlier.shape = NA, alpha = 0.5, fill = "white", color = "black") +
+  geom_jitter(width = 0.1, alpha = 0.5, size = 2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  facet_wrap(~gene_group, scales = "free_y", nrow = 1) +
+  labs(
+    title = "",
+    x = "",
+    y = "Log2 Fold Change",
+    fill = "Comparison",
+    color = "Significance: (log2FC > 0.5 & FDR < 0.05)"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    legend.position = "top",
+    strip.text = element_text(face = "bold", size = 10),
+    plot.title = element_text(face = "bold", size = 14)
+  ) +
+  scale_fill_manual(values = c("HDM_F2 vs HDM" = "#E69F00", "HDM_F2_STI vs HDM" = "#56B4E9")) 
+
+
+```
+
+
+
+
+## Session info
+
+```{r session-info}
+sessionInfo()
+```

@@ -1,0 +1,742 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+```{r}
+# Set working directory
+
+library(Seurat)
+library(ggpubr)
+library(ggplot2)
+library(ezRun)
+library(SCpubr)
+library(qs2)
+library(remotes)
+library(scales)
+library(scProportionTest)  # provides sc_utils(), permutation_test(), permutation_plot()
+
+
+```
+
+```{r}
+seurat_path <- file.path("data", "scMulti_HDM.qs2")  # processed single-cell object — see README (Data availability) for access
+scData <- qs_read(seurat_path, nthreads = 8)
+
+# Set the assay to RNA
+DefaultAssay(scData) <- "RNA"
+```
+
+```{r}
+scData$cellType <- dplyr::recode(
+  scData$cellType,
+  "Myocytes" = "dSMCs2",
+  "dSMCs1"  = "dSMCs1",
+  "dSMCs2" = "dSMCs2",
+  "dSMCs3"  = "dSMCs3"
+)
+
+Idents(scData) <- "cellType"
+table(scData@meta.data$cellType)
+```
+
+
+```{r}
+# Figure S2C
+library(Seurat)
+library(ggplot2)
+
+# STEP 1: Color palette without yellow
+cols_1 <- c("#8DD3C7", "#E78AC3", "#BEBADA", "#FB8072", 
+           "#80B1D3", "#FDB462", "#B3DE69", "#FCCDE5", 
+           "#D9D9D9", "#BC80BD", "#CCEBC5", "#8DA0CB")
+
+# STEP 2: Base plot (with split.by added)
+p <- DimPlot(
+  object = scData,            
+  reduction = "umap",         
+  label = TRUE,               
+  label.size = 5,              # Labels can get too large when split, so size reduced a bit
+  # CHANGED HERE: column name in metadata should be "condition"
+  pt.size = 0.2,              
+  raster = FALSE,             
+  cols = cols_1 
+)
+
+# STEP 3: Transparency
+p$layers[[1]]$aes_params$alpha <- 0.7
+
+# STEP 4: AXIS AND FONT SETTINGS
+p + ggtitle("Annotated UMAP") +
+  theme(
+    # --- GENERAL FONT ---
+    text = element_text(family = "sans"), 
+    
+    # --- AXIS TITLES ---
+    axis.title = element_text(size = 18, face = "bold", color = "black"),
+    
+    # --- AXIS TEXT ---
+    axis.text = element_text(size = 15, face = "plain", color = "black"),
+    
+    # --- PLOT TITLE ---
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    
+    # --- LEGEND ---
+    legend.text = element_text(size = 15),
+    legend.title = element_text(size = 15, face = "bold"),
+    
+    # --- STRIP (Condition labels above each panel) ---
+    strip.text = element_text(size = 18, face = "bold") 
+  )
+```
+
+
+```{r}
+# Figure 2C
+library(Seurat)
+library(ggplot2)
+
+# STEP 1: Color palette without yellow
+cols_1 <- c("#8DD3C7", "#E78AC3", "#BEBADA", "#FB8072", 
+           "#80B1D3", "#FDB462", "#B3DE69", "#FCCDE5", 
+           "#D9D9D9", "#BC80BD", "#CCEBC5", "#8DA0CB")
+
+# STEP 2: Base plot (with split.by added)
+p <- DimPlot(
+  object = scData,            
+  reduction = "umap",         
+  label = TRUE,               
+  label.size = 5,              # Labels can get too large when split, so size reduced a bit
+  split.by = "condition",      # Column name in metadata must be "condition"
+  pt.size = 0.2,              
+  raster = FALSE,             
+  cols = cols_1 
+)
+
+# STEP 3: Transparency
+p$layers[[1]]$aes_params$alpha <- 0.7
+
+# STEP 4: AXIS AND FONT SETTINGS
+p + ggtitle("UMAP Split by Condition") +
+  theme(
+    # --- GENERAL FONT ---
+    text = element_text(family = "sans"), 
+    
+    # --- AXIS TITLES ---
+    axis.title = element_text(size = 18, face = "bold", color = "black"),
+    
+    # --- AXIS TEXT ---
+    axis.text = element_text(size = 15, face = "plain", color = "black"),
+    
+    # --- PLOT TITLE ---
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    
+    # --- LEGEND ---
+    legend.text = element_text(size = 15),
+    legend.title = element_text(size = 15, face = "bold"),
+    
+    # --- STRIP (condition labels above each panel) ---
+    strip.text = element_text(size = 18, face = "bold") 
+  )
+```
+
+
+
+## Plotting Cellcounts as barplots
+
+
+```{r}
+# Figure 2D
+library(ggplot2)
+library(dplyr)
+library(scales) # required for percent_format
+
+# 1. First define our color palette (the 12-color set you wanted)
+custom_colors_revised <- c(
+  "#8DD3C7", "#E78AC3", "#BEBADA", "#FB8072", 
+  "#80B1D3", "#FDB462", "#B3DE69", "#FCCDE5", 
+  "#D9D9D9", "#BC80BD", "#CCEBC5", "#8DA0CB"
+)
+
+# 2. Function definition (stays the same)
+cell_counts_by_condition <- function(seurat_obj, celltype_col, condition_col = "condition") {
+  md <- seurat_obj@meta.data
+  stopifnot(celltype_col %in% colnames(md), condition_col %in% colnames(md))
+  
+  as.data.frame(table(
+      cellType  = md[[celltype_col]],
+      condition = md[[condition_col]]
+    ), stringsAsFactors = FALSE) |>
+    dplyr::rename(n_cells = Freq)
+}
+
+# 3. Prepare the data
+cell_counts <- cell_counts_by_condition(
+  seurat_obj = scData,
+  celltype_col = "cellType", # This should be the column name in your data
+  condition_col = "condition"
+)
+
+# Order by cell counts (automatic)
+celltype_levels <- cell_counts %>%
+  group_by(cellType) %>%
+  summarise(total_cells = sum(n_cells), .groups = "drop") %>%
+  arrange(desc(total_cells)) %>%
+  pull(cellType)
+
+cell_counts <- cell_counts %>%
+  mutate(cellType = factor(cellType, levels = celltype_levels))
+
+# --- PLOT 1: TOTAL CELL COUNTS ---
+p_total <- ggplot(cell_counts, aes(x = condition, y = n_cells, fill = cellType)) +
+  geom_col(position = position_dodge(width = 0.9), width = 0.8, color = "black") +
+  
+  # ADDING THE COLORS HERE
+  scale_fill_manual(values = custom_colors_revised) + 
+  
+  labs(x = "Condition", y = "Number of cells", fill = "Cell type") +
+  theme_classic() +
+  theme(
+    text = element_text(color = "black"),
+    axis.text = element_text(color = "black")
+  )
+
+# --- SECOND PART: PROPORTIONAL (PERCENTAGE) PLOT ---
+cell_counts_rel <- cell_counts %>%
+  group_by(condition) %>%
+  mutate(n_total = sum(n_cells), pct = n_cells / n_total) %>%
+  ungroup()
+
+# Manual ordering (the list from your code)
+# Note: if your data has a cell type not in this list, it will become NA, so watch out.
+my_levels <- c("Pax7_PGs1", "Pax7_PGs2", "Pax7_PGs3", "Prolif_MB", 
+               "Diff_MB", "dSMCs1", "dSMCs2", "dSMCs3", "dSMCs4", 
+               "FAPs1", "FAPs2")
+
+# Only factorize the ones actually present in the data (to avoid errors)
+cell_counts_rel$cellType <- factor(cell_counts_rel$cellType, levels = my_levels)
+
+# --- PLOT 2: PERCENTAGE DISTRIBUTION ---
+p_rel <- ggplot(cell_counts_rel, aes(x = condition, y = pct, fill = cellType)) +
+  geom_col(color = "black") + # Black border line
+  
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  
+  # ADDING THE COLORS HERE TOO
+  scale_fill_manual(values = custom_colors_revised) +
+  
+  labs(x = "Condition", y = "Cell type composition", fill = "Cell type") +
+  theme_classic() +
+  theme(
+    text = element_text(color = "black"),
+    axis.text = element_text(color = "black")
+  )
+
+# Render both plots
+print(p_total)
+print(p_rel)
+```
+
+
+
+```{r calculating foldchanges for celltype abundances between HDM and HDM FR condition}
+
+prop_test <- sc_utils(scData)
+
+prop_test <- permutation_test(
+	prop_test, cluster_identity = "cellType",
+	sample_1 = "HDM_FR", sample_2 = "HDM",
+	sample_identity = "condition"
+)
+
+
+
+p1 <- permutation_plot(prop_test, 
+                       FDR_threshold = 0.05,
+                       log2FD_threshold = log2(1.45))
+
+
+
+p1
+```
+
+
+```{r making a prettier plot}
+# Figure S2D
+library(dplyr)
+library(ggplot2)
+
+# 1. Define the specific populations you want to keep
+# Replace these with the exact names of your clusters
+my_clusters <- c("Pax7_PGs1","Pax7_PGs2","Pax7_PGs3","Prolif_MB", "Diff_MB", "dSMCs1","dSMCs2","dSMCs3","FAPs1","FAPs2") 
+
+df_plot <- prop_test@results$permutation %>%
+  
+  # --- FILTER STEP ---
+  # Keep only the rows where the cluster name is in your list
+  filter(clusters %in% my_clusters) %>%
+  
+  # --- INVERT COMPARISON STEP ---
+  # To switch from A vs B to B vs A:
+  # 1. Multiply Log2FD by -1
+  # 2. Multiply CIs by -1 and SWAP them (High becomes Low, Low becomes High)
+  mutate(
+    obs_log2FD = -obs_log2FD,
+    new_CI_low = -boot_CI_97.5, 
+    new_CI_high = -boot_CI_2.5
+  ) %>%
+  
+  # --- RECALCULATE SIGNIFICANCE ---
+  # Re-run logic on the NEW obs_log2FD values
+  mutate(sig_dir = case_when(
+    FDR < 0.05 & obs_log2FD < -0.5 ~ "Down",
+    FDR < 0.05 & obs_log2FD > 0.5 ~ "Up",
+    TRUE ~ "n.s."
+  )) %>%
+  
+  # Re-order the factor based on the new values so the plot looks organized
+  mutate(clusters = factor(clusters,
+                           levels = clusters[order(obs_log2FD, decreasing = TRUE)]))
+
+
+# --- PLOTTING ---
+p <- ggplot(df_plot,
+            aes(x = obs_log2FD, y = clusters, color = sig_dir)) +
+  geom_vline(xintercept = 0,
+             linewidth = 0.6,
+             color = "black") +
+  geom_vline(xintercept = c(-0.5, 0.5),
+             linetype = "dashed",
+             linewidth = 0.5,
+             color = "grey60") +
+  
+  # Note: Use the NEW inverted CI columns here
+  geom_errorbarh(aes(xmin = new_CI_low, xmax = new_CI_high),
+                 height = 0.2,
+                 linewidth = 0.7) +
+  
+  geom_point(size = 3) +
+  scale_color_manual(values = c("Down" = "#0072B2",
+                                "Up"   = "#B71C1C",
+                                "n.s." = "grey75"),
+                     breaks = c("Down", "Up", "n.s."),
+                     labels = c("Down (FDR < 0.05, log2FD < -0.5)",
+                                "Up (FDR < 0.05, log2FD > 0.5)",
+                                "n.s. (FDR ≥ 0.05, & -0.5 < FDR < 0.5)")) +
+  
+  # Update the label to reflect the new direction (I swapped the order below)
+  labs(x = "log2 fold difference (HDM vs HDM_FR)", 
+       y = NULL,
+       color = "Significance thresholds") +
+  theme_classic(base_size = 12) +
+  theme(legend.position = "right",
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 9))
+
+p
+
+
+```
+
+
+```{r}
+seurat_path <- file.path("data", "scMulti_HDM.qs2")  # processed single-cell object — see README (Data availability) for access
+scData <- qs_read(seurat_path, nthreads = 8)
+
+# Set the assay to RNA
+DefaultAssay(scData) <- "RNA"
+```
+
+```{r}
+scData$cellType <- dplyr::recode(
+  scData$cellType,
+  "Myocytes" = "dSMCs",
+  "dSMCs1"  = "dSMCs",
+  "dSMCs2" = "dSMCs",
+  "dSMCs3"  = "dSMCs"
+)
+
+Idents(scData) <- "cellType"
+table(scData@meta.data$cellType)
+```
+
+```{r}
+#Figure 2J
+# Fast-maturation marker set used for this panel
+fast_maturation_genes_SHORT <- c("SIX1", "MYH1", "MYH2", "MYL1", "MYOM2",
+                                 "TRDN", "TNNI2", "TNNC2", "ENO3", "CKM", "LDHA")
+
+# 1. First define which clusters you want to show here
+# (Example: "0", "1", "3" or, if you named them, "Myoblast", "Myocyte", etc.)
+selected_clusters <- c( "dSMCs")
+
+p <- VlnPlot(
+  scData,
+  features = fast_maturation_genes_SHORT,
+  idents = selected_clusters,  # <-- Cluster selection happens here
+  pt.size = 0,
+  stack = TRUE,
+  flip = TRUE,
+  cols = c("#000000", "#667CFF"),
+  split.by = "condition"
+)
+
+p + 
+  theme(
+    # Y axis (flip = TRUE → gene names go here)
+    axis.text.y  = element_text(size = 10, face = "bold"),
+    axis.title.y = element_text(size = 20),
+    
+    # X axis (expression scale)
+    axis.text.x  = element_text(size = 14),
+    axis.title.x = element_text(size = 18),
+    
+    # General
+    legend.text  = element_text(size = 16),
+    legend.title = element_text(size = 18)
+  )
+```
+
+
+## Plotting Celltype abundances as Significance
+
+```{r foldchanges-abundance-dSMCs-merged}
+
+prop_test <- sc_utils(scData)
+
+prop_test <- permutation_test(
+	prop_test, cluster_identity = "cellType",
+	sample_1 = "HDM_FR", sample_2 = "HDM",
+	sample_identity = "condition"
+)
+
+
+
+p1 <- permutation_plot(prop_test, 
+                       FDR_threshold = 0.05,
+                       log2FD_threshold = log2(1.45))
+
+
+
+p1
+```
+
+
+```{r abundance-plot-dSMCs-merged}
+# Figure 2E
+library(dplyr)
+library(ggplot2)
+
+# 1. Define the specific populations you want to keep
+# Replace these with the exact names of your clusters
+my_clusters <- c("Pax7_PGs1","Pax7_PGs2","Pax7_PGs3","Prolif_MB", "Diff_MB", "dSMCs") 
+
+df_plot <- prop_test@results$permutation %>%
+  
+  # --- FILTER STEP ---
+  # Keep only the rows where the cluster name is in your list
+  filter(clusters %in% my_clusters) %>%
+  
+  # --- INVERT COMPARISON STEP ---
+  # To switch from A vs B to B vs A:
+  # 1. Multiply Log2FD by -1
+  # 2. Multiply CIs by -1 and SWAP them (High becomes Low, Low becomes High)
+  mutate(
+    obs_log2FD = -obs_log2FD,
+    new_CI_low = -boot_CI_97.5, 
+    new_CI_high = -boot_CI_2.5
+  ) %>%
+  
+  # --- RECALCULATE SIGNIFICANCE ---
+  # Re-run logic on the NEW obs_log2FD values
+  mutate(sig_dir = case_when(
+    FDR < 0.05 & obs_log2FD < -0.5 ~ "Down",
+    FDR < 0.05 & obs_log2FD > 0.5 ~ "Up",
+    TRUE ~ "n.s."
+  )) %>%
+  
+  # Re-order the factor based on the new values so the plot looks organized
+  mutate(clusters = factor(clusters,
+                           levels = clusters[order(obs_log2FD, decreasing = TRUE)]))
+
+
+# --- PLOTTING ---
+p <- ggplot(df_plot,
+            aes(x = obs_log2FD, y = clusters, color = sig_dir)) +
+  geom_vline(xintercept = 0,
+             linewidth = 0.6,
+             color = "black") +
+  geom_vline(xintercept = c(-0.5, 0.5),
+             linetype = "dashed",
+             linewidth = 0.5,
+             color = "grey60") +
+  
+  # Note: Use the NEW inverted CI columns here
+  geom_errorbarh(aes(xmin = new_CI_low, xmax = new_CI_high),
+                 height = 0.2,
+                 linewidth = 0.7) +
+  
+  geom_point(size = 3) +
+  scale_color_manual(values = c("Down" = "#0072B2",
+                                "Up"   = "#B71C1C",
+                                "n.s." = "grey75"),
+                     breaks = c("Down", "Up", "n.s."),
+                     labels = c("Down (FDR < 0.05, log2FD < -0.5)",
+                                "Up (FDR < 0.05, log2FD > 0.5)",
+                                "n.s. (FDR ≥ 0.05, & -0.5 < FDR < 0.5)")) +
+  
+  # Update the label to reflect the new direction (I swapped the order below)
+  labs(x = "log2 fold difference (HDM vs HDM_FR)", 
+       y = NULL,
+       color = "Significance thresholds") +
+  theme_classic(base_size = 12) +
+  theme(legend.position = "right",
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 9))
+
+p
+
+
+```
+
+
+```{r}
+seurat_path <- file.path("data", "scMulti_HDM.qs2")  # processed single-cell object — see README (Data availability) for access
+scData <- qs_read(seurat_path, nthreads = 8)
+
+# Set the assay to RNA
+DefaultAssay(scData) <- "RNA"
+```
+
+```{r}
+scData$cellType <- dplyr::recode(
+  scData$cellType,
+  "Myocytes" = "dSMCs2",
+  "dSMCs1"  = "dSMCs1",
+  "dSMCs2" = "dSMCs2",
+  "dSMCs3"  = "dSMCs3"
+)
+
+Idents(scData) <- "cellType"
+table(scData@meta.data$cellType)
+```
+
+
+```{r}
+#FİGURE S2E
+scData_subset <- subset(scData, idents = c("dSMCs1", "dSMCs2", "dSMCs3"))
+levels(scData_subset) <- c("dSMCs1", "dSMCs2", "dSMCs3")
+
+VlnPlot(scData_subset, 
+        features = c("TNNI2", "TNNC2", "TCAP", "CSRP3", "RYR1", "CACNA1S", "LDHA","ENO3", "COX4I1", "ATP5F1A"), 
+        pt.size = 0, 
+        stack = TRUE, 
+        flip = TRUE, 
+        cols = c("#000000", "#667CFF"),
+        split.by = "condition",
+        theme(
+    axis.text.y = element_text(size = 14, face = "bold"), 
+    axis.title.y = element_text(size = 16, face = "bold")  
+  ))
+```
+
+
+```{r}
+dSMCs_groups <- list(
+  "Muscle_Contraction_(GO:0006936)" = c("ACTA1", "MYL1", "TNNI2", "TNNT3", "TNNC2", "TPM2", "TCAP", "CSRP3"),
+  "Calcium_Transport_(GO:0070296)" = c("RYR1", "CACNA1S", "ATP2A2"),
+  "Energy_Metabolism_(GO:0006096)" = c("CKM", "LDHA", "ENO3"),
+  "Oxidative_Phosphorylation_(GO:0006119)" = c("COX4I1", "CYCS", "UQCRC2", "ATP5F1A", "ATP5F1B")
+)
+
+gene_groups <- list(
+  "Quiescent/Satellite cell"    = c("PAX7", "NOTCH3", "HEYL", "HEY1", "SPRY1", "APOC1", "CDKN1C"),
+  "Activation/Proliferation"    = c("MYF5", "MYOD1", "MKI67", "TOP2A", "MYMX"),
+  "Differentiation/Maturation"  = c("CDKN1A", "MYMK", "MYOG", "MEF2C", "ACTA1",
+                                     "TNNC2", "TNNI2", "TNNT3", "MYH1", "MYH2", "MYH7"),
+  "Calcium handling"            = c("RYR1", "STAC3", "TRDN", "CAMK2D"),
+  "Fibroblasts/FAPs"            = c("PDGFRA", "COL1A1", "COL6A1")
+)
+```
+ 
+
+```{r}
+#Figure S2F
+selected_clusters <- c("dSMCs1", "dSMCs2", "dSMCs3") 
+
+DotPlot(scData, 
+        features = dSMCs_groups, 
+        idents = selected_clusters, 
+        dot.scale = 6) +
+  RotatedAxis() +
+  scale_y_discrete(limits = c("dSMCs1", "dSMCs2", "dSMCs3")) +
+  scale_colour_gradient2(low = "blue", mid = "lightgray", high = "red") +
+  labs(title = "Candidate Markers in Selected Clusters",
+       x = "Marker Genes", 
+       y = "Cell State Cluster")
+
+
+```
+ 
+ 
+```{r}
+#FİGURE 2H
+scData_subset <- subset(scData, idents = c("Pax7_PGs1", "Pax7_PGs2", "Pax7_PGs3", "Prolif_MB","Diff_MB"))
+levels(scData_subset) <- c("Pax7_PGs1", "Pax7_PGs2", "Pax7_PGs3", "Prolif_MB","Diff_MB")
+
+VlnPlot(scData_subset, 
+        features = c("PAX7", "SPRY1", "NOTCH3", "APOC1", "HEY1", "HES1", "HEYL","CDKN11C", "CAV1", "IGFBP5"), 
+        pt.size = 0, 
+        stack = TRUE, 
+        flip = TRUE, 
+        cols = c("#000000", "#667CFF"),
+        split.by = "condition",
+        theme(
+    axis.text.y = element_text(size = 14, face = "bold"),  
+    axis.title.y = element_text(size = 16, face = "bold")  
+  ))
+```
+
+```{r}
+scData$cellType <- dplyr::recode(
+  scData$cellType,
+  "Myocytes" = "dSMCs",
+  "dSMCs1"  = "dSMCs",
+  "dSMCs2" = "dSMCs",
+  "dSMCs3"  = "dSMCs"
+)
+
+Idents(scData) <- "cellType"
+table(scData@meta.data$cellType)
+```
+
+```{r}
+#Figure 2F
+selected_clusters <- c("Pax7_PGs1", "Pax7_PGs2", "Pax7_PGs3", "Prolif_MB","Diff_MB", "dSMCs", "FAPs1", "FAPs2") 
+
+DotPlot(scData, 
+        features = gene_groups, 
+        idents = selected_clusters, 
+        dot.scale = 6) +
+  RotatedAxis() +
+  scale_y_discrete(limits = c("Pax7_PGs1", "Pax7_PGs2", "Pax7_PGs3", "Prolif_MB","Diff_MB", "dSMCs", "FAPs1", "FAPs2")) +
+  scale_colour_gradient2(low = "blue", mid = "lightgray", high = "red") +
+  labs(title = "Candidate Markers in Selected Clusters",
+       x = "Marker Genes", 
+       y = "Cell State Cluster")
+
+
+```
+
+
+```{r}
+#FİGURE 2L
+library(ggplot2)
+library(dplyr)
+library(Seurat)
+
+# ---------------------------------------------------------
+# EXISTING FUNCTION (Single or Manual Split)
+# ---------------------------------------------------------
+
+plot_and_save_features <- function(seurat_obj, features_list, split_col = NULL, pt_size = 4) {
+  
+  for (gene in features_list) {
+    
+    # 1. Plot Creation
+    p <- FeaturePlot(seurat_obj, 
+                     features = gene, 
+                     reduction = "umap", 
+                     split.by = split_col,
+                     order = TRUE,
+                     pt.size = pt_size, # Fixed: uses the function argument now
+                     cols= c("lightgray","#667CFF")) 
+    
+    # 2. Update Theme
+    p <- p + theme(
+      plot.title = element_text(size = 25, face = "bold"),
+      axis.title = element_text(size = 25),
+      axis.text = element_text(size = 25),
+      legend.text = element_text(size = 25),
+      legend.title = element_text(size = 25)
+    )
+    
+    # 3. File Name
+    suffix <- ifelse(is.null(split_col), "", paste0("_", split_col))
+    file_name <- paste0(gene, "_UMAP", suffix, ".pdf")
+    
+    # 4. Save (Standard Size)
+    ggsave(filename = file_name, plot = p, width = 6, height = 5, dpi = 300)
+    
+    # 5. Print and Message
+    print(p)
+    message(paste("Saved:", file_name))
+  }
+}
+
+# ---------------------------------------------------------
+# NEW FUNCTION: Optimized for Splitting Conditions
+# ---------------------------------------------------------
+
+plot_split_features <- function(seurat_obj, features_list, split_col, pt_size = 1) {
+  
+  # Check if the split column exists
+  if (!split_col %in% colnames(seurat_obj@meta.data)) {
+    stop(paste("Column", split_col, "not found in metadata!"))
+  }
+  
+  # Calculate dynamic width: 6 inches per condition (prevents squishing)
+  num_conditions <- length(unique(seurat_obj@meta.data[[split_col]]))
+  dynamic_width <- 6 * num_conditions
+  
+  for (gene in features_list) {
+    
+    # 1. Plot Creation (Split forced)
+    p <- FeaturePlot(seurat_obj, 
+                     features = gene, 
+                     reduction = "umap", 
+                     split.by = split_col,
+                     order = TRUE,
+                     pt.size = pt_size,
+                     cols= c("lightgray","#667CFF")) 
+    
+    # 2. Update Theme
+    p <- p + theme(
+      plot.title = element_text(size = 25, face = "bold"),
+      axis.title = element_text(size = 25),
+      axis.text = element_text(size = 25),
+      legend.text = element_text(size = 25),
+      legend.title = element_text(size = 25)
+    )
+    
+    # 3. File Name (Includes 'SPLIT' to distinguish files)
+    file_name <- paste0(gene, "_UMAP_SPLIT_by_", split_col, ".pdf")
+    
+    # 4. Save (Using Dynamic Width)
+    ggsave(filename = file_name, plot = p, width = dynamic_width, height = 5, dpi = 300)
+    
+    # 5. Print and Message
+    print(p)
+    message(paste("Saved Split Plot:", file_name, "(Width:", dynamic_width, ")"))
+  }
+}
+
+# ---------------------------------------------------------
+# EXECUTION EXAMPLES
+# ---------------------------------------------------------
+
+target_genes <- c("PAX7", "MYOD1", "HEY1","SIX1","MYL1", "TNNC2","TRDN")
+
+# Option 1: Standard Plot (Combined)
+plot_and_save_features(scData, target_genes, pt_size = 1)
+
+# Option 2: Split Plot (e.g., split by 'Condition' or 'Timepoint')
+# Replace 'Condition' with your actual metadata column name
+plot_split_features(scData, target_genes, split_col = "condition", pt_size = 1)
+```
+
+## Session info
+
+```{r session-info}
+sessionInfo()
+```

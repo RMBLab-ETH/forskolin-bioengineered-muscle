@@ -1,0 +1,253 @@
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE)
+
+suppressPackageStartupMessages({
+  library(ezRun)
+  library(Seurat)
+  library(dplyr)
+  library(qs2)
+  library(tidyr)
+  library(broom)
+  library(ggplot2)
+  library(ggrastr)   # required for geom_jitter_rast
+})
+```
+
+```{r helper function for formatting p-values}
+add_p_labels <- function(df, p_col) {
+  df %>%
+    mutate(
+      p_for_label = .data[[p_col]],
+      
+      p_for_label = ifelse(
+        is.na(p_for_label),
+        NA_real_,
+        pmax(p_for_label, .Machine$double.xmin)
+      ),
+      # scientific notation with 2 significant digits
+      p_sci = formatC(p_for_label, format = "e", digits = 2),
+
+      # stars / n.s. based on the chosen p column (default: adjusted)
+      sig = case_when(
+        is.na(p_for_label) ~ NA_character_,
+        p_for_label <= 1e-4 ~ "****",
+        p_for_label <= 1e-3 ~ "***",
+        p_for_label <= 1e-2 ~ "**",
+        p_for_label <= 5e-2 ~ "*",
+        TRUE ~ "n.s."
+      )
+    ) %>%
+    select(-p_for_label) 
+}
+```
+
+```{r reading in the data}
+seurat_path <- file.path("data", "scMulti_HDM.qs2")  # processed single-cell object — see README (Data availability) for access
+scData <- qs_read(seurat_path, nthreads = 8)
+```
+
+```{r gene lists}
+genes_quiescent <- c("PAX7", "SPRY1", "NOTCH3", "HEY1", "HEYL", "CDKN1C", "CAV1", "APOC1")
+
+muscle_maturation_panel_2 <- c(
+  "MYH7", "TNNT1", "TNNC1", "MYL2", "MYL3", "ATP2A2", "CASQ2", 
+  "MB", "MYOZ2", "ANKRD1", "TNNI1", "MYH1", "MYH2", "TNNT3", "TNNI2", 
+  "TNNC2", "MYL1", "MYLPF", "ATP2A1", "CASQ1", "PVALB", "ACTN3", "AMPD1"
+)
+
+gene_lists <- list(
+  Quiescence = genes_quiescent,
+  Maturation = muscle_maturation_panel_2
+)
+```
+
+```{r merging dSMCs clusters into one}
+# Merge all dSMCs subtypes into a single "dSMCs" category
+scData$cellType <- dplyr::recode(
+  scData$cellType,
+  "Myocytes" = "dSMCs",
+  "dSMCs1" = "dSMCs",
+  "dSMCs2" = "dSMCs",
+  "dSMCs3" = "dSMCs"
+)
+
+Idents(scData) <- "cellType"
+
+cat("Cell type counts:")
+table(scData@meta.data$cellType)
+```
+
+```{r computing module scores for Quiescence and Maturation}
+# Make sure these genes are present in the object (case matters!)
+gene_lists_present <- lapply(gene_lists, function(x) intersect(x, rownames(scData)))
+
+# Report any requested genes not found in the object (so silent drops are visible)
+for (nm in names(gene_lists)) {
+  missing <- setdiff(gene_lists[[nm]], rownames(scData))
+  if (length(missing)) message(nm, ": genes not found and dropped -> ", paste(missing, collapse = ", "))
+}
+
+# Guard the list order so scores cannot be silently swapped, then use a single
+# scalar `name` prefix (AddModuleScore's `name` is intended to be scalar).
+stopifnot(identical(names(gene_lists_present), c("Quiescence", "Maturation")))
+scData <- AddModuleScore(
+  object   = scData,
+  features = gene_lists_present,
+  name     = "Module"
+)
+
+# Module1 = first feature set (Quiescence); Module2 = second (Maturation)
+scData$Score_Quiescence <- scData$Module1
+scData$Score_Maturation <- scData$Module2
+```
+
+```{r Maturation score boxplot by cluster and condition}
+plot_maturation_by_clusters <- function(seurat_obj, selected_clusters = c("dSMCs")) {
+  
+  # Prepare the data
+  plot_df <- seurat_obj@meta.data %>%
+    dplyr::filter(condition %in% c("HDM", "HDM_FR")) %>%
+    dplyr::select(cellType, condition, Score_Maturation)
+  
+  if (!is.null(selected_clusters)) {
+    plot_df <- plot_df %>% 
+      dplyr::filter(cellType %in% selected_clusters)
+  }
+
+  # Visualization
+  p <- ggplot(plot_df, aes(x = condition, y = Score_Maturation, fill = condition)) +
+    
+    # Using geom_jitter_rast instead of geom_jitter
+    # raster.dpi = 300 (or 600) is important for publication quality
+    geom_jitter_rast(aes(color = condition), 
+                     alpha = 0.2, 
+                     size = 0.5, 
+                     position = position_jitter(0.2),
+                     raster.dpi = 300) + 
+    
+    # Boxplot (stays vector-based)
+    geom_boxplot(width = 0.6, outlier.shape = NA, alpha = 0.8, lwd = 0.8, color = "black") +
+    
+    facet_wrap(~cellType, scales = "free_x") +
+    
+    scale_fill_manual(values = c("HDM" = "darkgray", "HDM_FR" = "#667CFF")) +
+    scale_color_manual(values = c("HDM" = "darkgray", "HDM_FR" = "#667CFF")) +
+    
+    labs(title = "Maturation Score Distribution", x = NULL, y = "Maturation Score") +
+    
+    theme_bw() + 
+    theme(
+      strip.background = element_rect(fill = "gray90", color = "black"),
+      strip.text = element_text(face = "bold", size = 10),
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      panel.grid.major = element_line(color = "gray95"),
+      legend.position = "bottom"
+    )
+  
+  return(p)
+}
+
+# Run it:
+plot_maturation_by_clusters(scData)
+```
+
+```{r computing Wilcoxon test for Maturation score per celltype}
+md <- scData@meta.data %>%
+  dplyr::filter(condition %in% c("HDM", "HDM_FR"))
+
+wilcox_maturation <- md %>%
+  group_by(cellType) %>%
+  filter(n_distinct(condition) == 2) %>%  # safety check: only celltypes with both conditions
+  group_modify(~ broom::tidy(
+    wilcox.test(Score_Maturation ~ condition, data = .x)
+  )) %>%
+  ungroup() %>%
+  mutate(p_adj = p.adjust(p.value, method = "BH"))
+
+wilcox_maturation <- add_p_labels(wilcox_maturation, p_col = "p_adj") %>%
+  relocate(p_sci, sig, .after = cellType) %>%
+  select(-p_adj) %>%
+  rename(p_adj = p_sci)
+
+wilcox_maturation
+```
+```{r Quiescence score boxplot by cluster and condition}
+plot_quiescence_by_clusters <- function(seurat_obj, selected_clusters = c("Pax7_PGs1","Pax7_PGs2","Pax7_PGs3")) {
+  
+  # Prepare the data
+  plot_df <- seurat_obj@meta.data %>%
+    dplyr::filter(condition %in% c("HDM", "HDM_FR")) %>%
+    dplyr::select(cellType, condition, Score_Quiescence)
+  
+  if (!is.null(selected_clusters)) {
+    plot_df <- plot_df %>% 
+      dplyr::filter(cellType %in% selected_clusters)
+  }
+
+  # Visualization
+  p <- ggplot(plot_df, aes(x = condition, y = Score_Quiescence, fill = condition)) +
+    
+    # Using geom_jitter_rast instead of geom_jitter
+    # raster.dpi = 300 (or 600) is important for publication quality
+    geom_jitter_rast(aes(color = condition), 
+                     alpha = 0.2, 
+                     size = 0.5, 
+                     position = position_jitter(0.2),
+                     raster.dpi = 300) + 
+    
+    # Boxplot (stays vector-based)
+    geom_boxplot(width = 0.6, outlier.shape = NA, alpha = 0.8, lwd = 0.8, color = "black") +
+    
+    facet_wrap(~cellType, scales = "free_x") +
+    
+    scale_fill_manual(values = c("HDM" = "darkgray", "HDM_FR" = "#667CFF")) +
+    scale_color_manual(values = c("HDM" = "darkgray", "HDM_FR" = "#667CFF")) +
+    
+    labs(title = "Quiescence Score Distribution", x = NULL, y = "Quiescence Score") +
+    
+    theme_bw() + 
+    theme(
+      strip.background = element_rect(fill = "gray90", color = "black"),
+      strip.text = element_text(face = "bold", size = 10),
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      panel.grid.major = element_line(color = "gray95"),
+      legend.position = "bottom"
+    )
+  
+  return(p)
+}
+
+# Run it:
+plot_quiescence_by_clusters(scData)
+```
+
+```{r computing Wilcoxon test for Quiescence score per celltype}
+md <- scData@meta.data %>%
+  dplyr::filter(condition %in% c("HDM", "HDM_FR"))
+
+wilcox_quiescence <- md %>%
+  group_by(cellType) %>%
+  filter(n_distinct(condition) == 2) %>%  # safety check: only celltypes with both conditions
+  group_modify(~ broom::tidy(
+    wilcox.test(Score_Quiescence ~ condition, data = .x)
+  )) %>%
+  ungroup() %>%
+  mutate(p_adj = p.adjust(p.value, method = "BH"))
+
+wilcox_quiescence <- add_p_labels(wilcox_quiescence, p_col = "p_adj") %>%
+  relocate(p_sci, sig, .after = cellType) %>%
+  select(-p_adj) %>%
+  rename(p_adj = p_sci)
+
+wilcox_quiescence
+```
+
+
+## Session info
+
+```{r session-info}
+sessionInfo()
+```

@@ -1,0 +1,25 @@
+# R / RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# Rendered output
+*.html
+
+# Data objects (not tracked; obtain from the data archive — see README)
+*.qs
+*.qs2
+*.rds
+*.RDS
+*.h5
+*.h5ad
+*.loom
+*.mtx
+*.mtx.gz
+data/
+
+# OS
+.DS_Store
+Thumbs.db
